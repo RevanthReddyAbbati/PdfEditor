@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>Editor — Folio PDF</title>
+  <meta name="description" content="Folio PDF editor workspace — edit, sign, annotate and organize PDFs privately in your browser.">
+  <meta name="author" content="Revanth Reddy Abbati">
+  <meta name="theme-color" content="#4f46e5">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Dancing+Script:wght@600&family=Great+Vibes&family=Caveat:wght@600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/base.css">
+  <link rel="stylesheet" href="assets/css/app.css">
+  <script>try{var t=localStorage.getItem('folio-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body class="app">
+  <!-- ===== Top bar ===== -->
+  <header class="topbar">
+    <a href="./" class="logo" title="Back to home"><span class="logo-mark"><i data-icon="file"></i></span><span class="hide-md">Folio<small>PDF</small></span></a>
+    <div class="doc-name">
+      <input id="fileName" value="Untitled.pdf" spellcheck="false" aria-label="File name">
+      <span class="save-state" id="saveState"><i data-icon="check" data-size="14"></i> Saved locally</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="tb-group">
+      <button class="icon-btn" id="undoBtn" title="Undo (Ctrl+Z)" disabled><i data-icon="undo"></i></button>
+      <button class="icon-btn" id="redoBtn" title="Redo (Ctrl+Y)" disabled><i data-icon="redo"></i></button>
+    </div>
+    <div class="tb-group zoom-group hide-sm">
+      <button class="icon-btn" id="zoomOut" title="Zoom out (-)"><i data-icon="zoomOut"></i></button>
+      <button class="zoom-val" id="zoomVal" title="Fit to width">100%</button>
+      <button class="icon-btn" id="zoomIn" title="Zoom in (+)"><i data-icon="zoomIn"></i></button>
+    </div>
+    <div class="menu-wrap">
+      <button class="btn btn-sm" id="toolsMenuBtn"><i data-icon="sparkles" data-size="16"></i><span class="hide-sm">Tools</span><i data-icon="chevronDown" data-size="14"></i></button>
+      <div class="menu" id="toolsMenu" hidden>
+        <button data-action="open"><i data-icon="upload"></i>Open PDF…<kbd>Ctrl O</kbd></button>
+        <button data-action="merge"><i data-icon="layers"></i>Merge PDFs (append)</button>
+        <button data-action="blank"><i data-icon="filePlus"></i>Insert blank page</button>
+        <hr>
+        <button data-action="extract"><i data-icon="scissors"></i>Split / extract pages</button>
+        <button data-action="watermark"><i data-icon="droplet"></i>Watermark</button>
+        <button data-action="pageNumbers"><i data-icon="hash"></i>Page numbers</button>
+        <button data-action="meta"><i data-icon="info"></i>Document properties</button>
+        <hr>
+        <button data-action="shortcuts"><i data-icon="sliders"></i>Keyboard shortcuts</button>
+        <button data-action="new" class="danger"><i data-icon="trash"></i>Close document</button>
+      </div>
+    </div>
+    <button class="icon-btn" id="themeBtn" title="Toggle theme"><i data-icon="moon"></i></button>
+    <button class="btn btn-primary btn-sm" id="downloadBtn" disabled><i data-icon="download" data-size="16"></i><span class="hide-sm">Download</span></button>
+  </header>
+
+  <div class="workspace" id="workspace">
+    <!-- ===== Tool rail ===== -->
+    <nav class="toolrail" id="toolrail" aria-label="Tools"></nav>
+
+    <!-- ===== Pages sidebar ===== -->
+    <aside class="sidebar" id="sidebar">
+      <div class="panel-head">
+        <span>Pages <em id="pageCountLbl"></em></span>
+        <div>
+          <button class="icon-btn sm" id="addBlankBtn" title="Insert blank page"><i data-icon="plus" data-size="16"></i></button>
+          <button class="icon-btn sm" id="mergeBtn" title="Append another PDF"><i data-icon="layers" data-size="16"></i></button>
+        </div>
+      </div>
+      <div class="thumbs" id="thumbs"></div>
+    </aside>
+
+    <!-- ===== Viewer ===== -->
+    <main class="viewer" id="viewer">
+      <div class="empty" id="empty">
+        <div class="empty-card" id="emptyDrop">
+          <div class="empty-icon"><i data-icon="upload" data-size="30"></i></div>
+          <h2>Open a PDF to start editing</h2>
+          <p>Drag &amp; drop a file anywhere, or choose one from your device.<br>Everything stays private in your browser.</p>
+          <div class="empty-actions">
+            <button class="btn btn-primary btn-lg" id="emptyOpen"><i data-icon="upload"></i> Choose PDF</button>
+            <button class="btn btn-lg" id="emptyBlank"><i data-icon="filePlus"></i> Blank document</button>
+          </div>
+          <div class="empty-hint"><i data-icon="shield" data-size="16"></i> Files never leave your device</div>
+        </div>
+      </div>
+      <div class="pages" id="pages"></div>
+    </main>
+
+    <!-- ===== Properties ===== -->
+    <aside class="props" id="props">
+      <div class="panel-head"><span id="propsTitle">Properties</span></div>
+      <div class="props-body" id="propsBody"></div>
+    </aside>
+  </div>
+
+  <!-- Mobile panel toggles -->
+  <div class="mobile-toggles">
+    <button class="icon-btn" id="toggleSidebar" title="Pages"><i data-icon="panelLeft"></i></button>
+    <span class="page-ind" id="pageInd">–</span>
+    <button class="icon-btn" id="toggleProps" title="Properties"><i data-icon="sliders"></i></button>
+  </div>
+
+  <div class="drop-overlay" id="dropOverlay"><div><i data-icon="upload" data-size="40"></i><p>Drop PDF to open</p></div></div>
+  <div class="loading" id="loading" hidden><div class="spinner"></div><span id="loadingText">Working…</span></div>
+
+  <div id="modalRoot"></div>
+  <div class="toasts" id="toasts"></div>
+
+  <input type="file" id="openInput" accept="application/pdf,.pdf" hidden>
+  <input type="file" id="mergeInput" accept="application/pdf,.pdf" multiple hidden>
+  <input type="file" id="imageInput" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+
+  <footer class="site-footer">
+    <span>© <span class="js-year">2026</span> <strong>Revanth Reddy Abbati</strong>. All rights reserved.</span>
+    <span class="dot hide-sm">•</span><span class="hide-sm">Folio PDF Editor</span>
+  </footer>
+
+  <script src="assets/vendor/pdf-lib.min.js"></script>
+  <script type="module" src="assets/js/app.js"></script>
+</body>
+</html>
