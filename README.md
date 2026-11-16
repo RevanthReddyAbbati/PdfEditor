@@ -6,7 +6,8 @@ Folio PDF is a SaaS-style PDF editor that runs entirely in the browser. Files ar
 
 ## Features
 
-- **Edit existing text** — click any line in the PDF to replace it
+- **Edit existing text** — click any line or table cell to replace it; keeps the original font, size, color, weight and background
+- **Bundled fonts** (Playfair Display, Merriweather, Roboto, Open Sans, Lato, Montserrat, Poppins, Noto Sans) embedded on export, with automatic fallback for symbols like ₹
 - **Add text** with font, size, bold/italic, color and opacity controls
 - **eSignatures** — draw, type (script fonts) or upload; saved locally for reuse
 - **Annotate** — highlight, freehand draw, rectangles, ellipses, lines, arrows, whiteout
@@ -28,7 +29,9 @@ assets/js/app.js      Editor state, rendering, tools, modals
 assets/js/export.js   PDF generation (maps annotations into PDF space, incl. rotated pages)
 assets/js/icons.js    Inline icon set + theme helpers
 assets/js/store.js    Tiny IndexedDB key/value store
-assets/vendor/        pdf.js 4.4.168 and pdf-lib 1.17.1 (vendored)
+assets/js/fonts.js    Font registry, @font-face setup, baseline measurement
+assets/fonts/         Bundled TTF fonts (latin + latin-ext subsets)
+assets/vendor/        pdf.js 4.4.168, pdf-lib 1.17.1, @pdf-lib/fontkit 1.1.1 (vendored)
 ```
 
 No build step — it's plain HTML, CSS and ES modules.

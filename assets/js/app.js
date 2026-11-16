@@ -1,7 +1,8 @@
 import * as pdfjsLib from '../vendor/pdf.min.mjs';
 import { hydrateIcons, icon, initTheme, toggleTheme } from './icons.js';
 import { kv } from './store.js';
-import { buildPdf, FONT_BASELINE, arrowHead, pageNumberText } from './export.js';
+import { buildPdf, arrowHead, pageNumberText } from './export.js';
+import { FONTS, fontCss, installFontFaces, matchFontFamily, baselineRatio } from './fonts.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdf.worker.min.mjs', import.meta.url).href;
 
@@ -31,8 +32,8 @@ const style = { color: '#111827', fill: 'none', width: 2, size: 16, font: 'Helve
 
 const COLORS = ['#111827', '#ef4444', '#f97316', '#eab308', '#22c55e', '#0ea5e9', '#4f46e5', '#a855f7', '#ec4899', '#ffffff'];
 const HL_COLORS = ['#facc15', '#4ade80', '#38bdf8', '#f472b6', '#fb923c', '#a78bfa'];
-// Single quotes only: these values are embedded inside style="…" attributes
-const FONT_CSS = { Helvetica: 'Helvetica, Arial, sans-serif', Times: "'Times New Roman', Times, serif", Courier: "'Courier New', Courier, monospace" };
+
+
 const BLANK_PX = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
 
 // Strings are group headings (shown when the tool rail is expanded)
@@ -275,7 +276,7 @@ function closeDocument(silent = false) {
   S.editing = null;
   S.settings = { watermark: null, pageNumbers: null };
   S.meta = { title: '', author: '', subject: '', keywords: '' };
-  pdfPageCache.clear(); thumbCache.clear(); textItemCache.clear(); usedTextItems.clear(); textSize.clear();
+  pdfPageCache.clear(); thumbCache.clear(); bitmapCache.clear(); textItemCache.clear(); usedTextItems.clear(); textSize.clear();
   hist.stack = []; hist.idx = -1;
   updateHistoryButtons();
   rebuildAll();
@@ -373,7 +374,7 @@ async function renderCanvas(el) {
 }
 
 function textStyle(a) {
-  return `left:${a.x}px;top:${a.y}px;font-size:${a.size}px;color:${a.color};font-family:${FONT_CSS[a.font] || FONT_CSS.Helvetica};font-weight:${a.bold ? 700 : 400};font-style:${a.italic ? 'italic' : 'normal'};opacity:${a.opacity ?? 1}`;
+  return `left:${a.x}px;top:${a.y}px;font-size:${a.size}px;color:${a.color};font-family:${fontCss(a.font)};font-weight:${a.bold ? 700 : 400};font-style:${a.italic ? 'italic' : 'normal'};opacity:${a.opacity ?? 1}`;
 }
 
 function bbox(a) {
@@ -443,7 +444,7 @@ function renderAnnots(p) {
 
   const wm = S.settings.watermark;
   if (wm?.text) {
-    h += `<div class="a-fixed" style="left:${dw / 2}px;top:${dh / 2}px;transform:translate(-50%,-50%) rotate(-45deg);font:700 ${wm.size}px ${FONT_CSS.Helvetica};color:${wm.color};opacity:${wm.opacity}">${esc(wm.text)}</div>`;
+    h += `<div class="a-fixed" style="left:${dw / 2}px;top:${dh / 2}px;transform:translate(-50%,-50%) rotate(-45deg);font:700 ${wm.size}px ${fontCss('Helvetica')};color:${wm.color};opacity:${wm.opacity}">${esc(wm.text)}</div>`;
   }
   const pn = S.settings.pageNumbers;
   if (pn) {
@@ -452,7 +453,7 @@ function renderAnnots(p) {
     const baseline = vert === 'top' ? 28 + pn.size * 0.8 : dh - 28;
     const top = baseline - 0.846 * pn.size;
     const hpos = horiz === 'left' ? 'left:28px' : horiz === 'right' ? 'right:28px' : `left:${dw / 2}px;transform:translateX(-50%)`;
-    h += `<div class="a-fixed" style="${hpos};top:${top}px;font:400 ${pn.size}px ${FONT_CSS.Helvetica};color:${pn.color}">${esc(pageNumberText(pn, n, S.pages.length))}</div>`;
+    h += `<div class="a-fixed" style="${hpos};top:${top}px;font:400 ${pn.size}px ${fontCss('Helvetica')};color:${pn.color}">${esc(pageNumberText(pn, n, S.pages.length))}</div>`;
   }
 
   if (S.tool === 'edittext') {
@@ -861,11 +862,13 @@ async function ensureTextItems(p) {
       const f = describeFont(fontObj, tc.styles[it.fontName]);
       const w = it.width || size * it.str.length * 0.5;
       const item = { x: tx[4], y: tx[5] - size * 0.9, w, h: size * 1.15, size, str: it.str, baseline: tx[5], ...f };
-      // PDFs often split one line into several runs; join adjacent runs with the same style
+      // PDFs often split one line into several runs; join runs separated by no more than a
+      // normal word space. Wider gaps are table columns (e.g. Unit price | Qty | Amount).
       const prev = items[items.length - 1];
       const gap = prev ? item.x - (prev.x + prev.w) : Infinity;
+      const maxGap = item.size * (item.font === 'Courier' ? 0.7 : 0.4);
       if (prev && Math.abs(prev.baseline - item.baseline) < 0.5 && Math.abs(prev.size - item.size) < 0.3 &&
-          prev.font === item.font && prev.bold === item.bold && prev.italic === item.italic && gap > -1 && gap < item.size * 0.8) {
+          prev.font === item.font && prev.bold === item.bold && prev.italic === item.italic && gap > -1 && gap < maxGap) {
         const space = gap > item.size * 0.15 && !/\s$/.test(prev.str) && !/^\s/.test(item.str) ? ' ' : '';
         prev.str += space + item.str;
         prev.w = item.x + item.w - prev.x;
@@ -873,9 +876,136 @@ async function ensureTextItems(p) {
         items.push(item);
       }
     }
-    textItemCache.set(key, items);
+    // pdf.js itself sometimes returns several table cells as one run ("₹4,045.78 ₹36,990.00");
+    // split those at wide gaps found in the rendered page
+    let final = items;
+    if (items.some(it => /\S\s+\S/.test(it.str))) {
+      const bmp = await pageBitmap(p);
+      if (bmp) final = items.flatMap(it => splitAtGaps(it, bmp, p));
+    }
+    await calibrateSizes(final);
+    textItemCache.set(key, final);
   }
   if (S.tool === 'edittext') renderAnnots(p);
+}
+
+// The nominal size in a PDF can differ from how big the glyphs really are (custom font
+// matrices). Compare the real run widths with the font's own widths and scale to match,
+// using the median over every run in the same font so short strings don't skew it.
+async function calibrateSizes(items) {
+  const groups = new Map();
+  for (const it of items) {
+    const key = `${it.origFont}|${it.font}|${it.bold}|${it.italic}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(it);
+  }
+  for (const list of groups.values()) {
+    const f = list[0];
+    const css = `${f.italic ? 'italic ' : ''}${f.bold ? 700 : 400} 100px ${fontCss(f.font)}`;
+    try { await document.fonts.load(css, list.map(i => i.str).join('').slice(0, 300)); } catch {}
+    measureCtx.font = css;
+    const ratios = list.filter(i => i.str.trim().length >= 3).map(i => {
+      const m = measureCtx.measureText(i.inkW ? i.str.trim() : i.str);
+      const w = i.inkW ? m.actualBoundingBoxLeft + m.actualBoundingBoxRight : m.width;
+      return w > 0 ? i.w / (w * i.size / 100) : 0;
+    }).filter(r => r > 0).sort((a, b) => a - b);
+    if (!ratios.length) continue;
+    // Trust the measurement fully only when we draw with the same typeface
+    const exact = !!matchFontFamily(f.origFont) || /helvetica|arial|times|courier/i.test(f.origFont);
+    const r = clamp(ratios[Math.floor(ratios.length / 2)], exact ? 0.5 : 0.9, exact ? 1.5 : 1.1);
+    if (Math.abs(r - 1) < 0.03) continue;
+    for (const it of list) {
+      it.size *= r;
+      it.y = it.baseline - it.size * 0.9;
+      it.h = it.size * 1.15;
+    }
+  }
+}
+
+// Most common color in RGBA pixel data (quantized), as [r, g, b]
+function dominantColor(d) {
+  const buckets = new Map();
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 128) continue;
+    const key = ((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4);
+    const b = buckets.get(key) || [0, 0, 0, 0];
+    b[0] += d[i]; b[1] += d[i + 1]; b[2] += d[i + 2]; b[3]++;
+    buckets.set(key, b);
+  }
+  let best = null;
+  buckets.forEach(b => { if (!best || b[3] > best[3]) best = b; });
+  return best ? [best[0] / best[3], best[1] / best[3], best[2] / best[3]] : [255, 255, 255];
+}
+
+const measureCtx = document.createElement('canvas').getContext('2d');
+
+// Split one text run into separate runs wherever the rendered ink shows a column break:
+// a vertical table rule crossing the whole line, or a gap much wider than a word space.
+function splitAtGaps(it, bmp, p) {
+  const tokens = it.str.trim().split(/\s+/);
+  if (tokens.length < 2) return [it];
+  const k = bmp.width / dims(p).dw;
+  const x0 = clamp(Math.floor(it.x * k), 0, bmp.width - 1);
+  const x1 = clamp(Math.ceil((it.x + it.w) * k), 0, bmp.width);
+  const y0 = clamp(Math.floor((it.baseline - it.size * 0.75) * k), 0, bmp.height - 1);
+  const y1 = clamp(Math.ceil((it.baseline + it.size * 0.2) * k), 0, bmp.height);
+  const W = x1 - x0, H = y1 - y0;
+  if (W < 4 || H < 3) return [it];
+  // Read 3px above and below the box too, to recognise rules that run past the text
+  const pad = 3;
+  const ry0 = Math.max(0, y0 - pad), ry1 = Math.min(bmp.height, y1 + pad);
+  let d;
+  try { d = bmp.getContext('2d').getImageData(x0, ry0, W, ry1 - ry0).data; } catch { return [it]; }
+  const bg = dominantColor(d);
+  const isInk = (x, y) => {
+    const i = ((y - ry0) * W + x) * 4;
+    return Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]) > 90;
+  };
+  const counts = new Array(W).fill(0);
+  for (let y = y0; y < y1; y++) for (let x = 0; x < W; x++) if (isInk(x, y)) counts[x]++;
+  // A rule fills the whole box height and continues above and below it (a "|" glyph does not)
+  const isRule = counts.map((n, x) => n >= H * 0.9 && ry0 < y0 && ry1 > y1 && isInk(x, ry0) && isInk(x, ry1 - 1));
+  const runs = [];
+  let start = -1;
+  for (let x = 0; x <= W; x++) {
+    const ink = x < W && counts[x] > 0 && !isRule[x];
+    if (ink) { if (start < 0) start = x; }
+    else if (start >= 0) { runs.push([start, x]); start = -1; }
+  }
+  const minGap = it.size * 0.55 * k;
+  const ruleBetween = (a, b) => isRule.slice(a, b).some(Boolean);
+  const clusters = [];
+  for (const r of runs) {
+    const last = clusters[clusters.length - 1];
+    if (last && r[0] - last[1] < minGap && !ruleBetween(last[1], r[0])) last[1] = r[1];
+    else clusters.push([...r]);
+  }
+  if (clusters.length < 2 || clusters.length > tokens.length) return [it];
+
+  // Assign tokens to clusters in order, proportionally to their estimated widths
+  measureCtx.font = `${it.italic ? 'italic ' : ''}${it.bold ? 700 : 400} ${it.size}px ${fontCss(it.font)}`;
+  const est = tokens.map(t => measureCtx.measureText(t).width);
+  const space = measureCtx.measureText(' ').width;
+  const scale = est.reduce((a, b) => a + b, 0) / clusters.reduce((a, c) => a + (c[1] - c[0]), 0);
+  const groups = [];
+  let ti = 0;
+  clusters.forEach((c, j) => {
+    const remainingClusters = clusters.length - j - 1;
+    if (!remainingClusters) { groups.push(tokens.slice(ti)); return; }
+    const target = (c[1] - c[0]) * scale;
+    const g = [tokens[ti++]];
+    let acc = est[ti - 1];
+    while (ti < tokens.length - remainingClusters && acc + space + est[ti] / 2 <= target + space) {
+      acc += space + est[ti];
+      g.push(tokens[ti++]);
+    }
+    groups.push(g);
+  });
+  return clusters.map((c, j) => {
+    const left = j === 0 ? it.x : (x0 + c[0]) / k - it.size * 0.04;
+    const right = (x0 + c[1]) / k + it.size * 0.04;
+    return { ...it, x: left, w: Math.max(right - left, 1), str: groups[j].join(' '), inkW: true };
+  });
 }
 
 // Map a PDF font (e.g. "ABCDEF+Arial-BoldMT") to the closest standard font + weight/style
@@ -886,8 +1016,11 @@ function describeFont(obj, styleInfo) {
   const bold = !!(obj?.bold || obj?.black) || /bold|black|heavy|semibold|demi|extrabold|ultra/.test(n);
   const italic = !!obj?.italic || /italic|oblique|-it\b|kursiv/.test(n);
   const sansName = /sans|arial|helvet|calibri|verdana|segoe|roboto|open|lato|tahoma|trebuchet|futura|gill|myriad|frutiger|avenir|inter|noto ?sans|source ?sans|montserrat|poppins/.test(n);
+  // Prefer an exact bundled match (e.g. Playfair Display), else the closest standard font
+  const bundled = matchFontFamily(raw);
   let family = 'Helvetica';
-  if (/courier|mono|consol|menlo|inconsolata|lucida ?console|code/.test(n) || fam.includes('monospace')) family = 'Courier';
+  if (bundled) family = bundled;
+  else if (/courier|mono|consol|menlo|inconsolata|lucida ?console|code/.test(n) || fam.includes('monospace')) family = 'Courier';
   else if (!sansName && (/times|georgia|garamond|cambria|palatino|bookman|antiqua|minion|baskerville|caslon|century|didot|bodoni|serif|tnr|charter|merriweather|playfair/.test(n) || (fam.includes('serif') && !fam.includes('sans')))) family = 'Times';
   return { font: family, bold, italic, origFont: raw };
 }
@@ -895,18 +1028,26 @@ function describeFont(obj, styleInfo) {
 const toHex = (r, g, b) => '#' + [r, g, b].map(v => clamp(Math.round(v), 0, 255).toString(16).padStart(2, '0')).join('');
 
 // Bitmap of the page as displayed: reuse the on-screen render, otherwise render offscreen
+// (low-zoom screen renders are too coarse for gap detection, so those get a 2x offscreen render)
+const bitmapCache = new Map();
 async function pageBitmap(p) {
   const c = pageEls.get(p.id)?.querySelector('canvas');
-  if (c?.dataset.ready) return c;
-  if (p.src == null) return null;
-  const pg = await getPdfPage(p);
   const { dw } = dims(p);
-  const vp = pg.getViewport({ scale: 2, rotation: effRot(p) });
-  const off = document.createElement('canvas');
-  off.width = Math.floor(vp.width);
-  off.height = Math.floor(vp.height);
-  await pg.render({ canvasContext: off.getContext('2d'), viewport: vp }).promise;
-  return off.width && dw ? off : null;
+  if (c?.dataset.ready && c.width / dw >= 1.5) return c;
+  if (p.src == null) return null;
+  const key = textKey(p);
+  if (!bitmapCache.has(key)) {
+    bitmapCache.set(key, (async () => {
+      const pg = await getPdfPage(p);
+      const vp = pg.getViewport({ scale: 2, rotation: effRot(p) });
+      const off = document.createElement('canvas');
+      off.width = Math.floor(vp.width);
+      off.height = Math.floor(vp.height);
+      await pg.render({ canvasContext: off.getContext('2d', { willReadFrequently: true }), viewport: vp }).promise;
+      return off.width ? off : null;
+    })());
+  }
+  return bitmapCache.get(key);
 }
 
 // Find the background and ink colors inside a text box by sampling rendered pixels
@@ -919,18 +1060,7 @@ async function sampleTextColors(p, it) {
     const w = Math.min(c.width - x0, Math.ceil(it.w * k)), h = Math.min(c.height - y0, Math.ceil(it.h * k));
     if (w < 1 || h < 1) return null;
     const d = c.getContext('2d').getImageData(x0, y0, w, h).data;
-    // Background = most common (quantized) color
-    const buckets = new Map();
-    for (let i = 0; i < d.length; i += 4) {
-      if (d[i + 3] < 128) continue;
-      const key = ((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4);
-      const b = buckets.get(key) || [0, 0, 0, 0];
-      b[0] += d[i]; b[1] += d[i + 1]; b[2] += d[i + 2]; b[3]++;
-      buckets.set(key, b);
-    }
-    let best = null;
-    buckets.forEach(b => { if (!best || b[3] > best[3]) best = b; });
-    const bg = best ? [best[0] / best[3], best[1] / best[3], best[2] / best[3]] : [255, 255, 255];
+    const bg = dominantColor(d);
     // Ink = the pixels furthest from the background (anti-aliased edges are ignored)
     const ink = [];
     for (let i = 0; i < d.length; i += 4) {
@@ -959,10 +1089,10 @@ async function editExistingText(p, i) {
   if (!usedTextItems.has(p.id)) usedTextItems.set(p.id, new Set());
   if (usedTextItems.get(p.id).has(i)) return;
   usedTextItems.get(p.id).add(i);
-  const colors = await sampleTextColors(p, it);
+  const [colors, k] = await Promise.all([sampleTextColors(p, it), baselineRatio(it.font, it.bold, it.italic)]);
   const size = Math.round(it.size * 10) / 10;
   p.annots.push({ id: uid(), type: 'whiteout', x: it.x - 1, y: it.y - 1, w: it.w + 2, h: it.h + 2, fill: colors?.bg || '#ffffff', opacity: 1 });
-  const t = { id: uid(), type: 'text', x: it.x, y: it.baseline - (FONT_BASELINE[it.font] || 0.945) * size, text: it.str, size, font: it.font, bold: it.bold, italic: it.italic, color: colors?.ink || '#000000', opacity: 1, origFont: it.origFont };
+  const t = { id: uid(), type: 'text', x: it.x, y: it.baseline - k * size, text: it.str, size, font: it.font, bold: it.bold, italic: it.italic, color: colors?.ink || '#000000', opacity: 1, origFont: it.origFont };
   p.annots.push(t);
   S.sel = { pageId: p.id, id: t.id };
   renderAnnots(p);
@@ -1392,7 +1522,7 @@ function fieldHtml(key, a) {
     case 'size': return `<div class="field"><label>Font size</label><div class="field-row"><input type="range" min="6" max="96" step="0.5" value="${v}" data-range="size"><input class="input" style="width:64px" type="number" min="4" max="400" step="0.5" value="${v}" data-num="size"></div></div>`;
     case 'font': {
       const bold = val('bold', a), italic = val('italic', a);
-      return `<div class="field"><label>Font</label><div class="field-row"><select class="select" data-select="font">${Object.keys(FONT_CSS).map(f => `<option value="${f}"${f === v ? ' selected' : ''}>${f === 'Times' ? 'Times New Roman' : f}</option>`).join('')}</select>
+      return `<div class="field"><label>Font</label><div class="field-row"><select class="select" data-select="font">${Object.entries(FONTS).map(([f, d]) => `<option value="${f}"${f === v ? ' selected' : ''}>${d.label || f}</option>`).join('')}</select>
         <div class="seg"><button data-toggle="bold" class="${bold ? 'on' : ''}" title="Bold">${icon('bold', 16)}</button><button data-toggle="italic" class="${italic ? 'on' : ''}" title="Italic">${icon('italic', 16)}</button></div></div></div>`;
     }
   }
@@ -1880,6 +2010,7 @@ function closeDrawers() {
 
 function initChrome() {
   initTheme();
+  installFontFaces();
   hydrateIcons();
   document.querySelectorAll('.js-year').forEach(el => (el.textContent = new Date().getFullYear()));
   buildToolrail();

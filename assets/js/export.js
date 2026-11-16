@@ -2,9 +2,9 @@
 // (points, origin top-left, page as the user sees it incl. rotation) and are
 // mapped back into each page's PDF user space here.
 
-const { PDFDocument, StandardFonts, rgb, degrees, LineCapStyle, BlendMode } = window.PDFLib;
+import { FONTS, FALLBACK_FONT, SUBSET_NAMES, fontUrl, baselineRatio } from './fonts.js';
 
-export const FONT_BASELINE = { Helvetica: 0.945, Times: 0.937, Courier: 0.866 };
+const { PDFDocument, StandardFonts, rgb, degrees, LineCapStyle, BlendMode } = window.PDFLib;
 
 const FONT_MAP = {
   Helvetica: ['Helvetica', 'HelveticaBold', 'HelveticaOblique', 'HelveticaBoldOblique'],
@@ -53,11 +53,65 @@ export async function buildPdf({ sources, pages, settings, meta }) {
     return loaded.get(i);
   };
 
-  const fontCache = {};
-  const getFont = async (family = 'Helvetica', bold = false, italic = false) => {
+  out.registerFontkit(window.fontkit);
+
+  // Fonts are embedded lazily: a font (or a fallback) is only added when a character needs it
+  const fontCache = new Map();
+  const embedStd = (family, bold, italic) => {
     const name = (FONT_MAP[family] || FONT_MAP.Helvetica)[(bold ? 1 : 0) + (italic ? 2 : 0)];
-    if (!fontCache[name]) fontCache[name] = await out.embedFont(StandardFonts[name]);
-    return fontCache[name];
+    if (!fontCache.has(name)) fontCache.set(name, out.embedFont(StandardFonts[name]));
+    return fontCache.get(name);
+  };
+  const embedCustom = (family, bold, italic, subset) => {
+    const url = fontUrl(FONTS[family].id, subset, bold, italic);
+    if (!fontCache.has(url)) {
+      fontCache.set(url, (async () => {
+        const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+        const font = await out.embedFont(bytes, { subset: true });
+        font.__glyphs = window.fontkit.create(bytes);
+        return font;
+      })());
+    }
+    return fontCache.get(url);
+  };
+  const fontChain = (family = 'Helvetica', bold = false, italic = false) => {
+    const f = FONTS[family] || FONTS.Helvetica;
+    const chain = f.std ? [() => embedStd(family in FONTS ? family : 'Helvetica', bold, italic)]
+      : SUBSET_NAMES.map(s => () => embedCustom(family, bold, italic, s));
+    if (family !== FALLBACK_FONT) chain.push(...SUBSET_NAMES.map(s => () => embedCustom(FALLBACK_FONT, bold, italic, s)));
+    return chain;
+  };
+  const hasGlyph = (font, ch) => {
+    if (font.__glyphs) return font.__glyphs.hasGlyphForCodePoint(ch.codePointAt(0));
+    try { font.encodeText(ch); return true; } catch { return false; }
+  };
+
+  // Split text into runs, each drawn with the first font in the chain that has the glyphs
+  const buildRuns = async (text, chain) => {
+    const runs = [];
+    for (let ch of text.replace(/\t/g, '    ')) {
+      const last = runs[runs.length - 1];
+      let font = null;
+      if (last && (ch === ' ' || hasGlyph(last.font, ch))) font = last.font;
+      else {
+        for (const get of chain) { const f = await get(); if (hasGlyph(f, ch)) { font = f; break; } }
+      }
+      if (!font) { font = await chain[0](); ch = '?'; }
+      if (last && last.font === font) last.text += ch;
+      else runs.push({ font, text: ch });
+    }
+    return runs;
+  };
+  const runsWidth = (runs, size) => runs.reduce((w, r) => w + r.font.widthOfTextAtSize(r.text, size), 0);
+
+  // Draw runs starting at display point (sx, sy) along display direction (dx, dy)
+  const drawRuns = (page, m, runs, { sx, sy, dir = [1, 0], size, rotate, color, opacity }) => {
+    let off = 0;
+    for (const r of runs) {
+      const pt = m(sx + dir[0] * off, sy + dir[1] * off);
+      page.drawText(r.text, { x: pt.x, y: pt.y, size, font: r.font, color, opacity, rotate });
+      off += r.font.widthOfTextAtSize(r.text, size);
+    }
   };
   const imgCache = new Map();
   const getImage = async dataUrl => {
@@ -66,15 +120,6 @@ export async function buildPdf({ sources, pages, settings, meta }) {
       imgCache.set(dataUrl, dataUrl.startsWith('data:image/jpeg') ? await out.embedJpg(bytes) : await out.embedPng(bytes));
     }
     return imgCache.get(dataUrl);
-  };
-
-  // WinAnsi-safe text for the standard 14 fonts
-  const safe = (font, s) => {
-    let res = '';
-    for (const ch of s.replace(/\t/g, '    ')) {
-      try { font.encodeText(ch); res += ch; } catch { res += '?'; }
-    }
-    return res;
   };
 
   const total = pages.length;
@@ -144,13 +189,14 @@ export async function buildPdf({ sources, pages, settings, meta }) {
           break;
         }
         case 'text': {
-          const font = await getFont(a.font, a.bold, a.italic);
-          const k = FONT_BASELINE[a.font] ?? 0.945;
-          a.text.split('\n').forEach((ln, i) => {
-            if (!ln) return;
-            const pt = m(a.x, a.y + i * a.size * 1.2 + k * a.size);
-            page.drawText(safe(font, ln), { x: pt.x, y: pt.y, size: a.size, font, color: hexToRgb(a.color), opacity, rotate: rot });
-          });
+          const chain = fontChain(a.font, a.bold, a.italic);
+          const k = await baselineRatio(a.font, a.bold, a.italic);
+          const lines = a.text.split('\n');
+          for (let i = 0; i < lines.length; i++) {
+            if (!lines[i]) continue;
+            const runs = await buildRuns(lines[i], chain);
+            drawRuns(page, m, runs, { sx: a.x, sy: a.y + i * a.size * 1.2 + k * a.size, size: a.size, rotate: rot, color: hexToRgb(a.color), opacity });
+          }
           break;
         }
         case 'image': {
@@ -167,29 +213,25 @@ export async function buildPdf({ sources, pages, settings, meta }) {
 
     const wm = settings.watermark;
     if (wm && wm.text) {
-      const font = await getFont('Helvetica', true);
-      const text = safe(font, wm.text);
-      const w = font.widthOfTextAtSize(text, wm.size);
+      const runs = await buildRuns(wm.text, fontChain('Helvetica', true));
+      const w = runsWidth(runs, wm.size);
       const c = Math.SQRT1_2;
       const cx = dw / 2, cy = dh / 2;
       const sx = cx - c * w / 2 + c * 0.346 * wm.size;
       const sy = cy + c * w / 2 + c * 0.346 * wm.size;
-      const pt = m(sx, sy);
-      page.drawText(text, { x: pt.x, y: pt.y, size: wm.size, font, color: hexToRgb(wm.color), opacity: wm.opacity, rotate: degrees(R + 45) });
+      drawRuns(page, m, runs, { sx, sy, dir: [c, -c], size: wm.size, rotate: degrees(R + 45), color: hexToRgb(wm.color), opacity: wm.opacity });
     }
 
     const pn = settings.pageNumbers;
     if (pn) {
-      const font = await getFont('Helvetica');
-      const text = safe(font, pageNumberText(pn, n + 1, total));
       const size = pn.size;
-      const w = font.widthOfTextAtSize(text, size);
+      const runs = await buildRuns(pageNumberText(pn, n + 1, total), fontChain('Helvetica'));
+      const w = runsWidth(runs, size);
       const margin = 28;
       const [vert, horiz] = pn.position.split('-');
       const x = horiz === 'left' ? margin : horiz === 'right' ? dw - margin - w : (dw - w) / 2;
       const baseline = vert === 'top' ? margin + size * 0.8 : dh - margin;
-      const pt = m(x, baseline);
-      page.drawText(text, { x: pt.x, y: pt.y, size, font, color: hexToRgb(pn.color), rotate: rot });
+      drawRuns(page, m, runs, { sx: x, sy: baseline, size, rotate: rot, color: hexToRgb(pn.color) });
     }
   }
 
