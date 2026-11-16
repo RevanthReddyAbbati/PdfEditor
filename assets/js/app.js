@@ -35,23 +35,26 @@ const HL_COLORS = ['#facc15', '#4ade80', '#38bdf8', '#f472b6', '#fb923c', '#a78b
 const FONT_CSS = { Helvetica: 'Helvetica, Arial, sans-serif', Times: "'Times New Roman', Times, serif", Courier: "'Courier New', Courier, monospace" };
 const BLANK_PX = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
 
+// Strings are group headings (shown when the tool rail is expanded)
 const TOOLS = [
-  { id: 'select', icon: 'pointer', tip: 'Select & move (V)', key: 'v' },
-  { id: 'edittext', icon: 'editText', tip: 'Edit existing text (E)', key: 'e' },
-  { id: 'text', icon: 'type', tip: 'Add text (T)', key: 't' },
-  '-',
-  { id: 'draw', icon: 'pen', tip: 'Draw (D)', key: 'd' },
-  { id: 'highlight', icon: 'highlighter', tip: 'Highlight (H)', key: 'h' },
-  { id: 'whiteout', icon: 'eraser', tip: 'Whiteout (W)', key: 'w' },
-  '-',
-  { id: 'rect', icon: 'square', tip: 'Rectangle (R)', key: 'r' },
-  { id: 'ellipse', icon: 'circle', tip: 'Ellipse (O)', key: 'o' },
-  { id: 'line', icon: 'line', tip: 'Line (L)', key: 'l' },
-  { id: 'arrow', icon: 'arrow', tip: 'Arrow (A)', key: 'a' },
-  '-',
-  { id: 'image', icon: 'image', tip: 'Insert image (I)', key: 'i', action: true },
-  { id: 'signature', icon: 'signature', tip: 'Add signature (S)', key: 's', action: true },
+  { id: 'select', icon: 'pointer', label: 'Select', tip: 'Select & move (V)', key: 'v' },
+  'Text',
+  { id: 'edittext', icon: 'editText', label: 'Edit text', tip: 'Edit existing text (E)', key: 'e' },
+  { id: 'text', icon: 'type', label: 'Add text', tip: 'Add text (T)', key: 't' },
+  'Markup',
+  { id: 'draw', icon: 'pen', label: 'Draw', tip: 'Draw (D)', key: 'd' },
+  { id: 'highlight', icon: 'highlighter', label: 'Highlight', tip: 'Highlight (H)', key: 'h' },
+  { id: 'whiteout', icon: 'eraser', label: 'Whiteout', tip: 'Whiteout (W)', key: 'w' },
+  'Shapes',
+  { id: 'rect', icon: 'square', label: 'Rectangle', tip: 'Rectangle (R)', key: 'r' },
+  { id: 'ellipse', icon: 'circle', label: 'Ellipse', tip: 'Ellipse (O)', key: 'o' },
+  { id: 'line', icon: 'line', label: 'Line', tip: 'Line (L)', key: 'l' },
+  { id: 'arrow', icon: 'arrow', label: 'Arrow', tip: 'Arrow (A)', key: 'a' },
+  'Insert',
+  { id: 'image', icon: 'image', label: 'Image', tip: 'Insert image (I)', key: 'i', action: true },
+  { id: 'signature', icon: 'signature', label: 'Signature', tip: 'Add signature (S)', key: 's', action: true },
 ];
+const isTool = t => typeof t === 'object';
 const TOOL_NAMES = { select: 'Select', edittext: 'Edit text', text: 'Text', draw: 'Draw', highlight: 'Highlight', whiteout: 'Whiteout', rect: 'Rectangle', ellipse: 'Ellipse', line: 'Line', arrow: 'Arrow' };
 const STICKY_TOOLS = new Set(['draw', 'highlight', 'whiteout', 'edittext']);
 
@@ -643,11 +646,15 @@ function insertBlankPage() {
 /* =========================================================================
    Zoom + navigation
    ========================================================================= */
-function setZoom(z) {
+// anchor: { vx, vy } point in viewer coordinates that should stay fixed (defaults to viewer center).
+// after: optional viewer point where the anchored content should land (used to pan during pinch).
+function setZoom(z, anchor = null, after = anchor) {
   z = clamp(Math.round(z * 100) / 100, 0.25, 4);
   if (z === S.zoom) return;
-  const ratioY = viewer.scrollTop / Math.max(1, viewer.scrollHeight);
-  const ratioX = viewer.scrollLeft / Math.max(1, viewer.scrollWidth);
+  const a = anchor || { vx: viewer.clientWidth / 2, vy: viewer.clientHeight / 2 };
+  const b = after || a;
+  const ox = viewer.scrollLeft + a.vx, oy = viewer.scrollTop + a.vy;
+  const f = z / S.zoom;
   S.zoom = z;
   $('zoomVal').textContent = `${Math.round(z * 100)}%`;
   S.pages.forEach(p => {
@@ -658,8 +665,8 @@ function setZoom(z) {
     io.unobserve(el);
     io.observe(el);
   });
-  viewer.scrollTop = ratioY * viewer.scrollHeight;
-  viewer.scrollLeft = ratioX * viewer.scrollWidth;
+  viewer.scrollLeft = ox * f - b.vx;
+  viewer.scrollTop = oy * f - b.vy;
 }
 
 function fitZoom(apply = false) {
@@ -701,15 +708,100 @@ viewer.addEventListener('scroll', () => {
 viewer.addEventListener('wheel', e => {
   if (!e.ctrlKey || !S.pages.length) return;
   e.preventDefault();
-  setZoom(S.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+  const r = viewer.getBoundingClientRect();
+  setZoom(S.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1), { vx: e.clientX - r.left, vy: e.clientY - r.top });
 }, { passive: false });
+
+/* ----- Pinch-to-zoom (touch) -----
+   While pinching, the page stack is scaled with a cheap CSS transform; the real zoom
+   (re-rendered at full sharpness) is applied once the fingers lift. */
+let pinch = null;
+const touchDist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+const touchMid = (a, b, r) => ({ vx: (a.clientX + b.clientX) / 2 - r.left, vy: (a.clientY + b.clientY) / 2 - r.top });
+
+viewer.addEventListener('touchstart', e => {
+  if (e.touches.length !== 2 || !S.pages.length) return;
+  e.preventDefault();
+  cancelDrag();
+  if (S.editing) finishEdit();
+  const r = viewer.getBoundingClientRect();
+  const m = touchMid(e.touches[0], e.touches[1], r);
+  pinch = { d0: touchDist(e.touches[0], e.touches[1]), z0: S.zoom, m0: m, m: m, s: 1, ox: viewer.scrollLeft + m.vx, oy: viewer.scrollTop + m.vy };
+  pagesEl.style.transformOrigin = `${pinch.ox}px ${pinch.oy}px`;
+  pagesEl.style.willChange = 'transform';
+}, { passive: false });
+
+viewer.addEventListener('touchmove', e => {
+  if (!pinch || e.touches.length !== 2) return;
+  e.preventDefault();
+  const r = viewer.getBoundingClientRect();
+  pinch.m = touchMid(e.touches[0], e.touches[1], r);
+  pinch.s = clamp(pinch.z0 * touchDist(e.touches[0], e.touches[1]) / pinch.d0, 0.25, 4) / pinch.z0;
+  const dx = pinch.m.vx - pinch.m0.vx, dy = pinch.m.vy - pinch.m0.vy;
+  pagesEl.style.transform = `translate(${dx}px, ${dy}px) scale(${pinch.s})`;
+  $('zoomVal').textContent = `${Math.round(pinch.z0 * pinch.s * 100)}%`;
+}, { passive: false });
+
+function endPinch() {
+  if (!pinch) return;
+  const { z0, s, m0, m } = pinch;
+  pinch = null;
+  pagesEl.style.transform = '';
+  pagesEl.style.willChange = '';
+  setZoom(z0 * s, m0, m);
+  $('zoomVal').textContent = `${Math.round(S.zoom * 100)}%`;
+}
+viewer.addEventListener('touchend', e => { if (e.touches.length < 2) endPinch(); });
+viewer.addEventListener('touchcancel', endPinch);
+
+// Double-tap on empty space toggles between fit-width and 2x
+let lastTap = 0;
+viewer.addEventListener('touchend', e => {
+  if (e.touches.length || e.changedTouches.length !== 1 || S.tool !== 'select' || e.target.closest('[data-id], .sel-h')) return;
+  const now = Date.now();
+  if (now - lastTap < 300) {
+    const t = e.changedTouches[0];
+    const r = viewer.getBoundingClientRect();
+    const pt = { vx: t.clientX - r.left, vy: t.clientY - r.top };
+    const fit = clamp(Math.floor(((viewer.clientWidth - 28) / Math.max(...S.pages.map(p => dims(p).dw), 1)) * 100) / 100, 0.25, 4);
+    setZoom(S.zoom > fit * 1.3 ? fit : fit * 2, pt);
+    lastTap = 0;
+  } else lastTap = now;
+});
 
 /* =========================================================================
    Tools
    ========================================================================= */
+const isMobile = () => matchMedia('(max-width: 900px)').matches;
+const railKey = () => `folio-rail-${isMobile() ? 'm' : 'd'}`;
+
 function buildToolrail() {
-  $('toolrail').innerHTML = TOOLS.map(t => t === '-' ? '<span class="sep"></span>' :
-    `<button class="tool-btn${S.tool === t.id ? ' active' : ''}" data-tool="${t.id}" data-tip="${t.tip}" aria-label="${t.tip}">${icon(t.icon, 20)}</button>`).join('');
+  const tools = TOOLS.map(t => !isTool(t) ? `<span class="sep"></span><span class="rail-group">${t}</span>` :
+    `<button class="tool-btn${S.tool === t.id ? ' active' : ''}" data-tool="${t.id}" data-tip="${t.tip}" title="${t.tip}" aria-label="${t.tip}">${icon(t.icon, 20)}<span class="tool-label">${t.label}</span><kbd class="tool-key">${t.key.toUpperCase()}</kbd></button>`).join('');
+  $('toolrail').innerHTML = `<button class="rail-toggle" id="railToggle" aria-expanded="false"></button><div class="rail-tools">${tools}</div>`;
+  applyRailState();
+}
+
+function applyRailState(open) {
+  if (open === undefined) {
+    let saved = null;
+    try { saved = localStorage.getItem(railKey()); } catch {}
+    open = saved == null ? !isMobile() : saved === '1';
+  }
+  workspace.classList.toggle('rail-open', open);
+  document.body.classList.toggle('rail-open', open);
+  const btn = $('railToggle');
+  btn.setAttribute('aria-expanded', String(open));
+  btn.title = open ? 'Collapse tool names' : 'Show tool names';
+  btn.innerHTML = isMobile()
+    ? `${icon(open ? 'chevronDown' : 'grid', 18)}<span class="tool-label">${open ? 'Less' : 'All tools'}</span>`
+    : `${icon(open ? 'chevronLeft' : 'chevronRight', 18)}<span class="tool-label">Collapse</span>`;
+}
+
+function toggleRail() {
+  const open = !workspace.classList.contains('rail-open');
+  try { localStorage.setItem(railKey(), open ? '1' : '0'); } catch {}
+  applyRailState(open);
 }
 
 function setTool(tool) {
@@ -736,8 +828,12 @@ function setTool(tool) {
 }
 
 $('toolrail').addEventListener('click', e => {
+  if (e.target.closest('#railToggle')) return toggleRail();
   const b = e.target.closest('[data-tool]');
-  if (b) setTool(b.dataset.tool);
+  if (!b) return;
+  setTool(b.dataset.tool);
+  // On phones the expanded grid covers the page; fold it back once a tool is picked
+  if (isMobile() && workspace.classList.contains('rail-open')) applyRailState(false);
 });
 
 /* ----- Edit existing text ----- */
@@ -946,6 +1042,11 @@ function deselect() {
 }
 
 pagesEl.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'touch') {
+    activeTouches.add(e.pointerId);
+    // A second finger means pinch-zoom, not drawing
+    if (activeTouches.size > 1 || pinch) { cancelDrag(); return; }
+  }
   const layer = e.target.closest('.layer');
   if (!layer || e.button > 0) return;
   const p = getPage(layer.parentElement.dataset.id);
@@ -1069,6 +1170,20 @@ pagesEl.addEventListener('pointermove', e => {
   const p = drag.p;
   moveRaf = requestAnimationFrame(() => renderAnnots(p));
 });
+
+const activeTouches = new Set();
+['pointerup', 'pointercancel'].forEach(ev => addEventListener(ev, e => activeTouches.delete(e.pointerId), true));
+
+// Abort the current drag and undo its in-progress changes
+function cancelDrag() {
+  if (!drag) return;
+  const { p, a, mode, orig } = drag;
+  drag = null;
+  cancelAnimationFrame(moveRaf);
+  if (mode === 'create') p.annots = p.annots.filter(x => x !== a);
+  else if (orig) Object.assign(a, orig);
+  renderAnnots(p);
+}
 
 function endDrag() {
   if (!drag) return;
@@ -1892,12 +2007,16 @@ function initChrome() {
     if (e.key === '+' || e.key === '=') { setZoom(S.zoom * 1.2); return; }
     if (e.key === '-') { setZoom(S.zoom / 1.2); return; }
     if (e.key === '0') { fitZoom(true); return; }
-    const tool = TOOLS.find(x => x !== '-' && x.key === e.key.toLowerCase());
+    const tool = TOOLS.find(x => isTool(x) && x.key === e.key.toLowerCase());
     if (tool && S.pages.length) setTool(tool.id);
   });
   let nudgeTimer = 0;
 
-  addEventListener('resize', () => { if (innerWidth > 900) closeDrawers(); });
+  let wasMobile = isMobile();
+  addEventListener('resize', () => {
+    if (innerWidth > 900) closeDrawers();
+    if (isMobile() !== wasMobile) { wasMobile = isMobile(); applyRailState(); }
+  });
 }
 
 /* =========================================================================

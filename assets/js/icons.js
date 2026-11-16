@@ -37,6 +37,8 @@ const ICONS = {
   check: ['M20 6 9 17l-5-5'],
   chevronDown: ['m6 9 6 6 6-6'],
   chevronRight: ['m9 18 6-6-6-6'],
+  chevronLeft: ['m15 18-6-6 6-6'],
+  grid: ['<rect x="3" y="3" width="7" height="7" rx="1"/>', '<rect x="14" y="3" width="7" height="7" rx="1"/>', '<rect x="14" y="14" width="7" height="7" rx="1"/>', '<rect x="3" y="14" width="7" height="7" rx="1"/>'],
   menu: ['M4 6h16', 'M4 12h16', 'M4 18h16'],
   panelLeft: ['<rect x="3" y="3" width="18" height="18" rx="2"/>', 'M9 3v18'],
   panelRight: ['<rect x="3" y="3" width="18" height="18" rx="2"/>', 'M15 3v18'],
